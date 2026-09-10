@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.pytest_cache/
+
+# Node / frontend
+node_modules/
+app/frontend/dist/
+
+# Üretilen içerik ve yerel çalışma alanı
+local_storage/
+ComfyUI/
+
+# Ortam
+.env
+*.log
+
+# Editör / araç
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
