@@ -3,6 +3,55 @@ import { Film, Download, Sparkles, Trash2, X } from 'lucide-react';
 import { deleteJob } from '../services/api';
 import VideoMetadata from './VideoMetadata';
 
+/**
+ * Galeri karti onizlemesi.
+ * Tarayicilar oynatma baslamadan videonun ilk karesini cizmeyebilir; kart bu yuzden
+ * video yuklense bile siyah gorunuyordu. Kucuk bir seek ilk kareyi cizmeye zorlar.
+ * Dosya bozuk/eksikse sessiz siyah kutu yerine acik bir yer tutucu gosterilir.
+ */
+function VideoThumb({ src }) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return (
+      <div style={{
+        width: '100%',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '6px',
+        color: 'var(--text-muted)',
+        fontSize: '11px'
+      }}>
+        <Film size={28} color="rgba(255,255,255,0.2)" />
+        Önizleme yüklenemedi
+      </div>
+    );
+  }
+
+  return (
+    <video
+      src={src}
+      muted
+      loop
+      playsInline
+      preload="metadata"
+      onLoadedData={(e) => {
+        const v = e.currentTarget;
+        if (v.currentTime === 0) {
+          v.currentTime = Math.min(0.1, (v.duration || 0.2) / 2);
+        }
+      }}
+      onError={() => setFailed(true)}
+      onMouseOver={(e) => e.currentTarget.play().catch(() => {})}
+      onMouseOut={(e) => e.currentTarget.pause()}
+      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+    />
+  );
+}
+
 export default function GalleryView({ videos, onReuseSettings, onRefresh, cameraPresets = [] }) {
   const [selectedVideo, setSelectedVideo] = useState(null);
 
@@ -73,14 +122,7 @@ export default function GalleryView({ videos, onReuseSettings, onRefresh, camera
             >
               {/* Video Kartı Üst Görsel / Video */}
               <div style={{ position: 'relative', width: '100%', height: '200px', background: '#000' }}>
-                <video
-                  src={`/api/videos/${vid.id}/stream`}
-                  muted
-                  loop
-                  onMouseOver={(e) => e.target.play().catch(() => {})}
-                  onMouseOut={(e) => e.target.pause()}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                />
+                <VideoThumb src={`/api/videos/${vid.id}/stream`} />
                 <div style={{
                   position: 'absolute',
                   bottom: '8px',

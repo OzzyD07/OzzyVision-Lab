@@ -337,6 +337,22 @@ class QueueManager:
         job_list.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         return job_list[:limit]
 
+    def list_gallery(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Tamamlanmis videolari tamamlanma zamanina gore (yeniden eskiye) doner.
+
+        Once suzulur, sonra siralanip kirpilir: aksi halde daha yeni basarisiz/iptal
+        isler pencereyi doldurup tamamlanmis videolari gizler. Siralama created_at
+        yerine completed_at ile yapilir; boylece "Yeniden Dene" ile sonradan biten
+        eski bir is de galerinin en ustunde gorunur.
+        """
+        completed = [j for j in self.jobs.values() if j.get("status") == JobStatus.COMPLETED]
+        completed.sort(
+            key=lambda j: j.get("completed_at") or j.get("updated_at") or j.get("created_at") or "",
+            reverse=True
+        )
+        return completed[:limit]
+
     def cancel_job(self, job_id: str) -> bool:
         """
         Kuyruktaki veya çalışmakta olan işi iptal eder.

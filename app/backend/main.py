@@ -43,6 +43,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def no_cache_html(request, call_next):
+    """
+    index.html her yuklemede yeniden dogrulanir. Cache-Control olmadan tarayici
+    eski index.html'i onbellekten kullanip guncellenen arayuz yerine eski JS
+    paketini calistirmaya devam ediyordu. Hash'li /assets dosyalari degismedigi
+    icin onbellekte kalabilir.
+    """
+    response = await call_next(request)
+    if response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 # Remote MCP Router'ını dahil et (/mcp)
 app.include_router(mcp_router)
 
@@ -258,9 +272,7 @@ async def get_asset_preview(asset_id: str):
 @app.get("/api/gallery")
 async def get_gallery(limit: int = 50):
     """Tamamlanmış videoları galeri kartları halinde döner."""
-    all_jobs = queue_manager.list_jobs(limit=100)
-    completed = [j for j in all_jobs if j.get("status") == "completed"]
-    return {"videos": completed[:limit]}
+    return {"videos": queue_manager.list_gallery(limit=limit)}
 
 
 @app.get("/api/videos/{job_id}/stream")

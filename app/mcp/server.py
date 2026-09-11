@@ -655,8 +655,8 @@ def execute_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     # 14. SON VİDEOLAR
     elif name == "list_recent_videos":
         limit = arguments.get("limit", 10)
-        completed_jobs = [j for j in queue_manager.list_jobs(limit=100) if j.get("status") == "completed"]
-        return {"total": len(completed_jobs[:limit]), "videos": completed_jobs[:limit]}
+        videos = queue_manager.list_gallery(limit=limit)
+        return {"total": len(videos), "videos": videos}
 
     # 16. GPU BELLEĞİNİ BOŞALT
     elif name == "free_vram":
