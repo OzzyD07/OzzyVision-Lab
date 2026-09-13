@@ -3,6 +3,7 @@ OzzyVision-Lab - FastAPI Main Application
 REST API, WebSocket gerçek zamanlı ilerleme ve Claude Remote MCP sunucusu.
 """
 
+import asyncio
 import os
 import shutil
 import urllib.request
@@ -10,17 +11,14 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-try:
-    import torch
-except ImportError:  # torch yalnızca GPU raporlaması için gerekli
-    torch = None
-
 from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.backend.queue_manager import queue_manager, read_comfyui_log_tail
+from app.backend import resources
+from app.backend.engines import get_engine
 from app.backend.storage import storage, safe_copy, is_safe_id
 from app.backend.camera_presets import get_all_presets
 from app.backend.prompt_enhancer import enhance_prompt
@@ -67,30 +65,8 @@ app.include_router(mcp_router)
 @app.get("/api/status")
 async def get_system_status():
     """GPU, ComfyUI ve Google Drive bağlantı durumunu döner."""
-    # GPU Tespiti
-    has_cuda = bool(torch and torch.cuda.is_available())
-    gpu_name = "CPU (Simülasyon)"
-    gpu_memory_gb = 0
-    gpu_used_gb = 0
-    if has_cuda:
-        try:
-            props = torch.cuda.get_device_properties(0)
-            gpu_name = props.name
-            gpu_memory_gb = round(props.total_memory / (1024**3), 1)
-            free_bytes, total_bytes = torch.cuda.mem_get_info()
-            gpu_used_gb = round((total_bytes - free_bytes) / (1024**3), 1)
-        except Exception:
-            has_cuda = False
-
-    # ComfyUI Kontrolü
-    comfy_online = False
-    try:
-        req = urllib.request.Request(f"{settings.COMFYUI_URL}/system_stats", headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
-            if resp.status == 200:
-                comfy_online = True
-    except Exception:
-        comfy_online = False
+    # GPU + sistem RAM: ComfyUI'den (kapalıysa nvidia-smi). Bloklayan çağrı thread'e alınır.
+    comfy_online, gpu = await asyncio.to_thread(resources.current_snapshot, get_engine("ltx25"))
 
     # Drive Kontrolü
     drive_connected = os.path.exists(settings.DRIVE_PROJECT_ROOT) or os.path.exists(settings.GOOGLE_DRIVE_MOUNT_PATH)
@@ -118,13 +94,7 @@ async def get_system_status():
                 "aspect_ratios": ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
             }
         ],
-        "gpu": {
-            "available": has_cuda,
-            "name": gpu_name,
-            "vram_gb": gpu_memory_gb,
-            "vram_used_gb": gpu_used_gb,
-            "target": "A100 80GB"
-        },
+        "gpu": gpu,
         "comfyui": {
             "online": comfy_online,
             "url": settings.COMFYUI_URL

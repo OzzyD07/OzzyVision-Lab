@@ -11,6 +11,7 @@ import {
 export default function App() {
   const [activeTab, setActiveTab] = useState('create'); // 'create' | 'queue' | 'gallery' | 'settings'
   const [status, setStatus] = useState(null);
+  const [liveResources, setLiveResources] = useState(null);
   const [cameraPresets, setCameraPresets] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [gallery, setGallery] = useState([]);
@@ -43,6 +44,7 @@ export default function App() {
     const disconnectWs = connectWebSocket((wsMessage) => {
       if (wsMessage.type === 'state_update') {
         setActiveJobId(wsMessage.active_job_id);
+        if (wsMessage.resources) setLiveResources(wsMessage.resources);
 
         if (wsMessage.updated_job) {
           setJobs((prevJobs) => {
@@ -100,6 +102,7 @@ export default function App() {
       {/* Üst Durum ve Navigasyon Çubuğu */}
       <Header
         status={status}
+        liveResources={activeJobId ? liveResources : null}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         queueCount={queueCount}

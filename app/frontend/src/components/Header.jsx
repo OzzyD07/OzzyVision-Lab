@@ -2,15 +2,33 @@ import React, { useState } from 'react';
 import { Video, Cpu, HardDrive, Zap, Layers, Image as ImageIcon, Settings as SettingsIcon, Eraser } from 'lucide-react';
 import { freeVram } from '../services/api';
 
-export default function Header({ status, activeTab, setActiveTab, queueCount, onRefresh }) {
+function usageColors(ratio) {
+  if (ratio >= 0.9) return { color: '#fca5a5', borderColor: 'rgba(244, 63, 94, 0.45)' };
+  if (ratio >= 0.75) return { color: '#fcd34d', borderColor: 'rgba(245, 158, 11, 0.4)' };
+  return { color: 'var(--text-secondary)', borderColor: 'var(--border-subtle)' };
+}
+
+function UsageBadge({ label, used, total, title }) {
+  if (!(total > 0)) return null;
+  const ratio = (used || 0) / total;
+  return (
+    <div className="badge" title={title} style={usageColors(ratio)}>
+      <span>{label} {used ?? '?'}/{total} GB</span>
+    </div>
+  );
+}
+
+export default function Header({ status, liveResources, activeTab, setActiveTab, queueCount, onRefresh }) {
   const gpuInfo = status?.gpu || {};
   const comfyOnline = status?.comfyui?.online;
   const driveConnected = status?.storage?.drive_connected;
   const [isFreeing, setIsFreeing] = useState(false);
 
-  const vramUsed = gpuInfo.vram_used_gb;
-  const vramTotal = gpuInfo.vram_gb;
-  const vramRatio = vramTotal > 0 ? (vramUsed / vramTotal) : 0;
+  // İş sürerken WebSocket ile gelen ölçüm (~2 sn), yoksa periyodik durum sorgusu (15 sn)
+  const vramUsed = liveResources?.vram_used_gb ?? gpuInfo.vram_used_gb;
+  const vramTotal = liveResources?.vram_total_gb ?? gpuInfo.vram_gb;
+  const ramUsed = liveResources?.ram_used_gb ?? gpuInfo.ram_used_gb;
+  const ramTotal = liveResources?.ram_total_gb ?? gpuInfo.ram_gb;
 
   const handleFreeVram = async () => {
     if (isFreeing) return;
@@ -188,19 +206,19 @@ export default function Header({ status, activeTab, setActiveTab, queueCount, on
             <span>{gpuInfo.available ? (gpuInfo.name?.includes('A100') ? 'A100 80GB' : gpuInfo.name) : 'CPU / Sim'}</span>
           </div>
 
-          {/* VRAM Kullanımı & Temizleme */}
-          {gpuInfo.available && vramTotal > 0 && (
-            <div
-              className="badge"
-              title={`VRAM kullanımı: ${vramUsed} GB / ${vramTotal} GB`}
-              style={{
-                color: vramRatio > 0.9 ? '#fca5a5' : vramRatio > 0.7 ? '#fcd34d' : 'var(--text-secondary)',
-                borderColor: vramRatio > 0.9 ? 'rgba(244, 63, 94, 0.45)' : 'var(--border-subtle)'
-              }}
-            >
-              <span>VRAM {vramUsed}/{vramTotal} GB</span>
-            </div>
-          )}
+          {/* GPU ve sistem belleği: "OOM" hatası ikisinden birinin dolmasıdır */}
+          <UsageBadge
+            label="VRAM"
+            used={vramUsed}
+            total={vramTotal}
+            title="GPU belleği"
+          />
+          <UsageBadge
+            label="RAM"
+            used={ramUsed}
+            total={ramTotal}
+            title="Sistem belleği. Dolarsa ComfyUI kapanır ve VRAM dolmadan OOM hatası görülür."
+          />
 
           <button
             onClick={handleFreeVram}

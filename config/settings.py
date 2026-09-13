@@ -83,6 +83,11 @@ DEV_MOCK_MODE = os.getenv("DEV_MOCK_MODE", "0") == "1"
 # Drive I/O yavaş olduğu için her tick'te job.json yazmak üretimi yavaşlatır.
 PROGRESS_PERSIST_INTERVAL = float(os.getenv("PROGRESS_PERSIST_INTERVAL", "10"))
 
+# İş sırasında ComfyUI durum/bellek sorgulama aralığı (saniye)
+COMFY_POLL_INTERVAL = float(os.getenv("COMFY_POLL_INTERVAL", "2.0"))
+# ComfyUI yanıt vermezse çökmüş sayılmadan önce beklenecek süre (saniye)
+COMFY_CRASH_GRACE_SECONDS = float(os.getenv("COMFY_CRASH_GRACE_SECONDS", "15"))
+
 BACKEND_HOST = os.getenv("BACKEND_HOST", "0.0.0.0")
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
 

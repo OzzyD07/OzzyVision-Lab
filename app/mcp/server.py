@@ -11,11 +11,6 @@ import urllib.request
 import urllib.parse
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-try:
-    import torch
-except ImportError:  # torch yalnızca GPU raporlaması için gerekli
-    torch = None
-
 import json
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -565,20 +560,17 @@ def execute_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
 
     # 7. SİSTEM DURUMU
     elif name == "get_system_status":
-        has_cuda = bool(torch and torch.cuda.is_available())
-        gpu_name = torch.cuda.get_device_name(0) if has_cuda else "CPU (Simülasyon)"
-        gpu_memory_gb = round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 1) if has_cuda else 0
+        from app.backend import resources as _resources
+        from app.backend.engines import get_engine as _get_engine
+        comfy_online, gpu = _resources.current_snapshot(_get_engine("ltx25"))
         drive_connected = os.path.exists(settings.DRIVE_PROJECT_ROOT) or os.path.exists(settings.GOOGLE_DRIVE_MOUNT_PATH)
         jobs = queue_manager.list_jobs(limit=100)
         completed_count = sum(1 for j in jobs if j.get("status") == "completed")
 
-        from app.backend.engines import get_engine as _get_engine
-        comfy_stats = _get_engine("ltx25").get_system_stats()
-
         return {
             "status": "online",
-            "comfyui": {"online": comfy_stats is not None, "url": settings.COMFYUI_URL},
-            "gpu": {"available": has_cuda, "name": gpu_name, "vram_gb": gpu_memory_gb},
+            "comfyui": {"online": comfy_online, "url": settings.COMFYUI_URL},
+            "gpu": gpu,
             "storage": {"drive_connected": drive_connected, "drive_root": settings.DRIVE_PROJECT_ROOT},
             "queue": {"active_job_id": queue_manager.active_job_id, "queue_length": len(queue_manager.queue), "completed_total": completed_count},
             "supported_models": [

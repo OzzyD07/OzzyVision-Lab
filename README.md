@@ -296,6 +296,8 @@ hangisini, nerede tanımlayacağınızı gösterir.
 | `COMFYUI_HOST` / `COMFYUI_PORT` | `127.0.0.1` / `8188` | ComfyUI adresi. ComfyUI'yi farklı portta çalıştırıyorsanız değiştirin. |
 | `COMFYUI_MAX_WAIT_SECONDS` | `1800` | Tek işin zaman aşımı. Uzun videolarda artırın. |
 | `BACKEND_HOST` / `BACKEND_PORT` | `0.0.0.0` / `8000` | FastAPI adresi. |
+| `COMFY_POLL_INTERVAL` | `2.0` | İş sırasında ComfyUI durumu ve VRAM/RAM ölçümünün alınma aralığı (saniye). |
+| `COMFY_CRASH_GRACE_SECONDS` | `15` | ComfyUI yanıt vermezse çökmüş sayılmadan önce beklenen süre. |
 
 ### VRAM davranışı (opsiyonel — `config/settings.py`)
 
@@ -306,6 +308,8 @@ hangisini, nerede tanımlayacağınızı gösterir.
 | `FREE_VRAM_SETTLE_SECONDS` | `2.5` | Boşaltma sonrası bekleme. |
 | `LORA_APPLY_TO_CLIP` | `0` | LoRA'yı metin kodlayıcıya da uygular. Açmak OOM riskini ciddi biçimde artırır. |
 | `MAX_LORAS_PER_JOB` | `3` | Aynı anda zincirlenecek LoRA sayısı. |
+
+> **Notebook ayarı:** `COMFY_LOW_RAM` ortam değişkeni değil, notebook'un 6. adım hücresindeki bir değişkendir. Stüdyo "Sistem RAM'i doldu" hatası verirse `True` yapıp hücreyi yeniden çalıştırın; modeller her üretimde yeniden okunur ama sistem RAM'inde birikmez.
 
 ### Model dosyaları (opsiyonel — `config/settings.py`)
 

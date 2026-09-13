@@ -17,6 +17,7 @@ import websockets
 
 from app.backend.storage import storage, safe_copy
 from app.backend.engines import get_engine
+from app.backend import resources
 import app.backend.lora_manager as lora_manager
 import config.settings as settings
 
@@ -51,20 +52,14 @@ def extract_relevant_error(log_text: str) -> Optional[str]:
     return None
 
 
-OOM_MARKERS = (
-    "out of memory",
-    "outofmemoryerror",
-    "cuda error",
-    "not enough memory",
-    "alloc failed",
-    "torch.cuda.outofmemory",
-)
-
-
 def _is_oom_error(message: str) -> bool:
-    """Hata metninin bellek yetersizliği kaynaklı olup olmadığını anlar."""
-    low = (message or "").lower()
-    return any(marker in low for marker in OOM_MARKERS)
+    """Hata metni GPU veya sistem belleği yetersizliğinden mi kaynaklanıyor?"""
+    return resources.classify_failure(message) in (resources.GPU_OOM, resources.RAM_OOM)
+
+
+class ComfyUnavailable(RuntimeError):
+    """ComfyUI süreci yanıt vermiyor (kapandı veya işletim sistemi tarafından öldürüldü)."""
+    pass
 
 
 def is_prompt_in_queue(queue_data: dict, prompt_id: str) -> Tuple[bool, bool]:
@@ -153,6 +148,9 @@ class QueueManager:
 
         # Aktif ComfyUI promptu (iptal edebilmek için)
         self.active_prompt_id: Optional[str] = None
+
+        # ComfyUI'den alınan son GPU/RAM ölçümü (arayüze canlı yayınlanır)
+        self._last_sample: Optional[Dict[str, Any]] = None
         self._cancel_requested: Set[str] = set()
 
         # ComfyUI'de o an yüklü olan model/LoRA kombinasyonunun imzası.
@@ -217,6 +215,32 @@ class QueueManager:
         )
         return f"{job.get('model', 'ltx25')}|{job.get('type', '')}|{lora_sig}"
 
+    def _record_sample(self, job: Dict[str, Any], sample: Dict[str, Any], node: Optional[str]):
+        """Son ölçümü saklar ve işin tepe VRAM/RAM kullanımını günceller."""
+        self._last_sample = sample
+        peak = job.setdefault("resource_peak", {})
+        if sample.get("vram_used_gb") is not None and sample["vram_used_gb"] >= peak.get("vram_used_gb", -1):
+            peak["vram_used_gb"] = sample["vram_used_gb"]
+            peak["vram_total_gb"] = sample.get("vram_total_gb")
+            peak["vram_node"] = node
+        if sample.get("ram_used_gb") is not None and sample["ram_used_gb"] >= peak.get("ram_used_gb", -1):
+            peak["ram_used_gb"] = sample["ram_used_gb"]
+            peak["ram_total_gb"] = sample.get("ram_total_gb")
+            peak["ram_node"] = node
+
+    @staticmethod
+    def _format_peak(peak: Optional[Dict[str, Any]]) -> str:
+        if not peak:
+            return ""
+        parts = []
+        if peak.get("vram_total_gb"):
+            node = f" ({peak['vram_node']})" if peak.get("vram_node") else ""
+            parts.append(f"VRAM {peak['vram_used_gb']}/{peak['vram_total_gb']} GB{node}")
+        if peak.get("ram_total_gb"):
+            node = f" ({peak['ram_node']})" if peak.get("ram_node") else ""
+            parts.append(f"RAM {peak['ram_used_gb']}/{peak['ram_total_gb']} GB{node}")
+        return "Tepe kullanım: " + " · ".join(parts) if parts else ""
+
     async def _free_comfy_vram(self, engine, reason: str):
         """ComfyUI'nin VRAM'deki model kopyalarını boşaltır (OOM önleme)."""
         try:
@@ -248,7 +272,8 @@ class QueueManager:
             "active_job_id": self.active_job_id,
             "queue_length": len(self.queue),
             "queue_ids": self.queue,
-            "updated_job": specific_job
+            "updated_job": specific_job,
+            "resources": self._last_sample
         }
         dead_clients = set()
         for client in self.ws_clients:
@@ -748,6 +773,9 @@ class QueueManager:
                 )
 
                 max_wait_seconds = getattr(settings, "COMFYUI_MAX_WAIT_SECONDS", 1800)
+                poll_interval = float(getattr(settings, "COMFY_POLL_INTERVAL", 2.0))
+                crash_grace = float(getattr(settings, "COMFY_CRASH_GRACE_SECONDS", 15))
+                health_failures = 0
                 stall_timeout = 900  # 15 dakika hareketsizlik kontrolü
                 start_time = time.time()
                 completed = False
@@ -755,7 +783,7 @@ class QueueManager:
 
                 try:
                     while (time.time() - start_time) < max_wait_seconds:
-                        await asyncio.sleep(2.0)
+                        await asyncio.sleep(poll_interval)
 
                         # 0. Kullanıcı iptali
                         if job_id in self._cancel_requested:
@@ -814,13 +842,21 @@ class QueueManager:
                                     err_msg = f"ComfyUI işlemi kuyruktan düştü veya sonlandı. {rel_err or log_tail[-300:]}"
                                     raise RuntimeError(err_msg)
 
-                        # 4. Sunucu Sağlık / Çökme Kontrolü (15 sn sonra başlar)
-                        if (time.time() - start_time) > 15:
-                            stats = await asyncio.to_thread(engine.get_system_stats)
-                            if stats is None:
+                        # 4. Bellek ölçümü ve sunucu sağlık kontrolü
+                        stats = await asyncio.to_thread(engine.get_system_stats)
+                        if stats is not None:
+                            health_failures = 0
+                            sample = resources.parse_comfy_stats(stats)
+                            if sample:
+                                self._record_sample(job, sample, shared_state.get("last_node"))
+                        else:
+                            # Yoğun model yüklemesinde tek bir zaman aşımı olabilir;
+                            # iki ardışık yanıtsızlık ve başlangıç payı sonrası çökmüş say.
+                            health_failures += 1
+                            if health_failures >= 2 and (time.time() - start_time) > crash_grace:
                                 log_tail = read_comfyui_log_tail(30)
                                 rel_err = extract_relevant_error(log_tail)
-                                raise RuntimeError(f"ComfyUI sunucusu kapandı veya çöktü (Muhtemelen OOM bellek yetersizliği). {rel_err or ''}")
+                                raise ComfyUnavailable(rel_err or "ComfyUI yanıt vermiyor.")
 
                         # 5. Stall (Hareketsizlik) Kontrolü
                         if (time.time() - shared_state["last_activity_time"]) > stall_timeout:
@@ -904,24 +940,52 @@ class QueueManager:
 
         except Exception as e:
             print(f"[QueueManager] Job {job_id} başarısız oldu: {e}")
-            err_str = str(e)
-            if "ComfyUI" in err_str and len(err_str) < 60:
-                log_tail = read_comfyui_log_tail(15)
-                rel_err = extract_relevant_error(log_tail)
-                if rel_err and rel_err not in err_str:
-                    err_str += f" | {rel_err}"
+            raw_error = str(e)
+            comfy_alive = not isinstance(e, ComfyUnavailable)
 
-            # Bellek yetersizliğinde kullanıcıya ne yapacağını söyle ve VRAM'i boşalt
-            if _is_oom_error(err_str):
+            if comfy_alive and "ComfyUI" in raw_error and len(raw_error) < 60:
+                rel_err = extract_relevant_error(read_comfyui_log_tail(15))
+                if rel_err and rel_err not in raw_error:
+                    raw_error += f" | {rel_err}"
+
+            kind = resources.classify_failure(raw_error, comfy_alive, self._last_sample)
+            peak_text = self._format_peak(job.get("resource_peak"))
+
+            if kind == resources.GPU_OOM:
+                wanted, free = resources.parse_allocation(raw_error)
+                summary = "GPU belleği (VRAM) yetmedi"
+                if wanted:
+                    summary += f": {wanted} istendi" + (f", {free} boştu" if free else "")
+                advice = "Süreyi veya çözünürlüğü düşürün ya da Taslak kalitesini deneyin."
                 self._loaded_signature = None
-                await self._free_comfy_vram(engine, "OOM sonrası temizlik")
-                err_str += (
-                    " | ÇÖZÜM ÖNERİSİ: Süreyi veya çözünürlüğü düşürün (Draft kalitesi), "
-                    "aynı anda kullanılan LoRA sayısını azaltın ve ComfyUI'yi --highvram olmadan başlatın."
+                await self._free_comfy_vram(engine, "GPU OOM sonrası temizlik")
+            elif kind == resources.RAM_OOM:
+                summary = "Sistem RAM'i doldu ve ComfyUI süreci kapatıldı (sorun VRAM değil)"
+                advice = (
+                    "Notebook'ta COMFY_LOW_RAM = True yapıp 6. adımı yeniden çalıştırın. "
+                    "Aynı oturumda iki motoru dönüşümlü kullanmak RAM'de iki model ailesini birden tutar."
                 )
+                self._loaded_signature = None
+            elif kind == resources.CRASH:
+                summary = "ComfyUI süreci beklenmedik şekilde kapandı"
+                advice = "6. adımı çalıştırıp ComfyUI'yi yeniden başlatın; ayrıntı için ComfyUI loguna bakın."
+                self._loaded_signature = None
+            else:
+                summary = raw_error
+                advice = ""
+
+            parts = [summary]
+            if kind != resources.OTHER and raw_error and raw_error not in summary:
+                parts.append(f"Ayrıntı: {raw_error}")
+            if peak_text:
+                parts.append(peak_text)
+            if advice:
+                parts.append(f"Öneri: {advice}")
+            err_str = " | ".join(parts)
 
             job["status"] = JobStatus.FAILED
-            job["current_stage"] = f"Hata: {err_str[:180]}"
+            job["failure_kind"] = kind
+            job["current_stage"] = f"Hata: {summary[:180]}"
             job["error"] = err_str
             job["updated_at"] = datetime.datetime.now().isoformat()
             self._persist(job)
