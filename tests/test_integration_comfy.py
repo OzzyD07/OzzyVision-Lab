@@ -152,6 +152,7 @@ def test_lora_job_frees_vram_and_uses_model_only(stub_comfy):
             "duration": 2,
             "loras": [{"name": lora_name, "strength": 0.75}]
         })
+        qm.queue.remove(job["id"])  # işi test yürütür; arka plan işçisi ikinci kez çalıştırmasın
         await qm._execute_job(job)
         return job
 
@@ -186,10 +187,12 @@ def test_engine_switch_frees_vram(stub_comfy):
 
     async def run():
         first = qm.create_job({"model": "ltx25", "prompt": "ilk sahne", "duration": 2})
+        qm.queue.remove(first["id"])  # işi test yürütür; arka plan işçisi ikinci kez çalıştırmasın
         await qm._execute_job(first)
         free_after_first = len(stub_comfy.free_calls)
 
         second = qm.create_job({"model": "minimax_h3", "prompt": "ikinci sahne", "duration": 4})
+        qm.queue.remove(second["id"])  # işi test yürütür; arka plan işçisi ikinci kez çalıştırmasın
         await qm._execute_job(second)
         return first, second, free_after_first
 
@@ -213,6 +216,7 @@ def test_missing_lora_fails_with_clear_message(stub_comfy):
             "duration": 2,
             "loras": [{"name": "bu_lora_yok_9999.safetensors", "strength": 1.0}]
         })
+        qm.queue.remove(job["id"])  # işi test yürütür; arka plan işçisi ikinci kez çalıştırmasın
         await qm._execute_job(job)
         return job
 

@@ -62,6 +62,49 @@ class ComfyUnavailable(RuntimeError):
     pass
 
 
+def queue_presence_counts_as_activity(is_running: bool, is_pending: bool, ws_connected: bool) -> bool:
+    """
+    ComfyUI kuyruğunda görünmek donma sayacını sıfırlamalı mı?
+
+    - Başka işlerin arkasında beklemek (pending) donma değildir.
+    - Çalışırken asıl canlılık işareti WebSocket düğüm/adım bildirimleridir. Kuyrukta
+      "çalışıyor" görünmek, gerçekten takılmış bir düğümü de gizlerdi.
+    - WebSocket bağlanamadıysa bildirim gelemez; o durumda kuyruk varlığına güvenilir.
+    """
+    return is_pending or (is_running and not ws_connected)
+
+
+class StepTimer:
+    """ComfyUI adım bildirimlerinden saniye/adım ve kalan süre hesaplar."""
+
+    def __init__(self):
+        self._key = None
+        self._first = None  # (adım, zaman)
+
+    def update(self, node: Any, value: int, maximum: int, now: float) -> Tuple[Optional[float], Optional[float]]:
+        key = (node, maximum)
+        if key != self._key or self._first is None or value < self._first[0]:
+            self._key = key
+            self._first = (value, now)
+            return None, None
+        done = value - self._first[0]
+        if done <= 0:
+            return None, None
+        per_step = (now - self._first[1]) / done
+        return per_step, per_step * max(0, maximum - value)
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = int(round(seconds))
+    if seconds < 60:
+        return f"{seconds} sn"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes} dk {sec} sn" if sec and minutes < 10 else f"{minutes} dk"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} sa {minutes} dk"
+
+
 def is_prompt_in_queue(queue_data: dict, prompt_id: str) -> Tuple[bool, bool]:
     """ComfyUI /queue verisinde prompt_id'nin durumunu (running, pending) döner."""
     running = False
@@ -240,6 +283,45 @@ class QueueManager:
             node = f" ({peak['ram_node']})" if peak.get("ram_node") else ""
             parts.append(f"RAM {peak['ram_used_gb']}/{peak['ram_total_gb']} GB{node}")
         return "Tepe kullanım: " + " · ".join(parts) if parts else ""
+
+    async def _abandon_prompt(self, engine, prompt_id: Optional[str]):
+        """
+        Backend'in vazgeçtiği promptu ComfyUI'de de durdurur.
+
+        Aksi halde ComfyUI "başarısız" işi arka planda bitirmeye devam eder ve
+        sıradaki iş onun arkasında bekler. Yalnızca BU prompt çalışıyorsa interrupt
+        gönderilir; başka bir işin çalışmasını kesmemek için bekleyen prompt kuyruktan silinir.
+        """
+        if not prompt_id:
+            return
+        try:
+            queue_info = await asyncio.to_thread(engine.get_queue)
+            if not queue_info:
+                return
+            is_running, is_pending = is_prompt_in_queue(queue_info, prompt_id)
+            if is_running:
+                await asyncio.to_thread(engine.interrupt)
+                print(f"[QueueManager] Vazgeçilen prompt ComfyUI'de kesildi: {prompt_id}")
+            elif is_pending:
+                await asyncio.to_thread(engine.delete_from_queue, prompt_id)
+                print(f"[QueueManager] Vazgeçilen prompt ComfyUI kuyruğundan silindi: {prompt_id}")
+        except Exception as e:
+            print(f"[QueueManager] Prompt durdurma uyarısı: {e}")
+
+    @staticmethod
+    def _job_context(job: Dict[str, Any]) -> str:
+        """Hata mesajı için iş özeti: motor, çözünürlük, kare, adım ve ölçülen hız."""
+        dims = job.get("dimensions") or {}
+        parts = [{"ltx25": "LTX-2.5", "minimax_h3": "MiniMax H3"}.get(job.get("model"), job.get("model") or "?")]
+        if dims.get("width"):
+            parts.append(f"{dims['width']}×{dims['height']}")
+        if dims.get("frames"):
+            parts.append(f"{dims['frames']} kare")
+        if job.get("steps"):
+            parts.append(f"{job['steps']} adım")
+        if job.get("step_seconds"):
+            parts.append(f"{_format_duration(job['step_seconds'])}/adım")
+        return "İş: " + " · ".join(parts)
 
     async def _free_comfy_vram(self, engine, reason: str):
         """ComfyUI'nin VRAM'deki model kopyalarını boşaltır (OOM önleme)."""
@@ -577,16 +659,27 @@ class QueueManager:
                             val = data.get("value", 0)
                             max_val = data.get("max", 1)
                             if max_val > 0:
+                                now = time.time()
                                 step_pct = 50 + int((val / max_val) * 36)  # %50 -> %86 gerçek adım
                                 job["progress"] = min(86, step_pct)
-                                job["current_stage"] = f"Video Üretiliyor (Adım {val}/{max_val})..."
-                                shared_state["last_activity_time"] = time.time()
+                                per_step, remaining = shared_state["step_timer"].update(
+                                    data.get("node"), val, max_val, now
+                                )
+                                stage = f"Video Üretiliyor (Adım {val}/{max_val}"
+                                if per_step:
+                                    job["step_seconds"] = round(per_step, 1)
+                                    stage += f" · {_format_duration(per_step)}/adım · ~{_format_duration(remaining)} kaldı"
+                                job["current_stage"] = stage + ")"
+                                shared_state["last_activity_time"] = now
                                 self._persist(job, force=False)
                                 await self.broadcast_state(job)
 
         except Exception as e:
             # WebSocket kurulamasa dahi ana döngüde HTTP kuyruk denetimi devam eder
             print(f"[QueueManager] ComfyUI WebSocket dinleme uyarısı (HTTP denetimine geçildi): {e}")
+        finally:
+            # Bağlantı koptuysa bildirim gelmez; donma tespiti kuyruk varlığına geri dönmeli
+            shared_state["ws_connected"] = False
 
     async def _execute_job(self, job: Dict[str, Any]):
         """Belirtilen işi ComfyUI üzerinden adım adım yürütür."""
@@ -766,7 +859,8 @@ class QueueManager:
                     "error": None,
                     "ws_connected": False,
                     "last_activity_time": time.time(),
-                    "last_node": None
+                    "last_node": None,
+                    "step_timer": StepTimer()
                 }
                 ws_task = asyncio.create_task(
                     self._comfy_ws_listener(client_id, prompt_id, workflow, job, shared_state)
@@ -776,7 +870,7 @@ class QueueManager:
                 poll_interval = float(getattr(settings, "COMFY_POLL_INTERVAL", 2.0))
                 crash_grace = float(getattr(settings, "COMFY_CRASH_GRACE_SECONDS", 15))
                 health_failures = 0
-                stall_timeout = 900  # 15 dakika hareketsizlik kontrolü
+                stall_timeout = float(getattr(settings, "COMFY_STALL_SECONDS", 1800))
                 start_time = time.time()
                 completed = False
                 history = None
@@ -818,10 +912,20 @@ class QueueManager:
                         if queue_info:
                             is_running, is_pending = is_prompt_in_queue(queue_info, prompt_id)
                             if is_running or is_pending:
-                                shared_state["last_activity_time"] = time.time()
-                                # KSampler başlamadan önce model Google Drive'dan okunurken
-                                # ilerleme çubuğunu düzenli ve gerçekçi ilerlet (%15 - %45)
-                                if job.get("progress", 0) < 45:
+                                if queue_presence_counts_as_activity(
+                                    is_running, is_pending, shared_state.get("ws_connected", False)
+                                ):
+                                    shared_state["last_activity_time"] = time.time()
+
+                                if is_pending:
+                                    # Başka bir prompt GPU'yu kullanıyor; hiçbir şey yüklenmiyor.
+                                    waiting = "ComfyUI kuyruğunda bekliyor (önceki işlem sürüyor)..."
+                                    if job.get("current_stage") != waiting:
+                                        job["current_stage"] = waiting
+                                        self._persist(job, force=False)
+                                        await self.broadcast_state(job)
+                                elif job.get("progress", 0) < 45:
+                                    # Çalışıyor ama henüz düğüm bildirimi yok: modeller yükleniyor
                                     elapsed_loading = time.time() - start_time
                                     job["progress"] = min(45, 15 + int(elapsed_loading / 8))
                                     if not shared_state.get("last_node"):
@@ -862,7 +966,10 @@ class QueueManager:
                         if (time.time() - shared_state["last_activity_time"]) > stall_timeout:
                             log_tail = read_comfyui_log_tail(30)
                             rel_err = extract_relevant_error(log_tail)
-                            raise TimeoutError(f"ComfyUI 15 dakikadır yanıt vermiyor (Stall). Son Durum: {rel_err or log_tail[-250:]}")
+                            raise TimeoutError(
+                                f"ComfyUI {_format_duration(stall_timeout)} boyunca hiçbir düğüm veya adım bildirimi göndermedi (donma). "
+                                f"Son durum: {rel_err or log_tail[-250:]}"
+                            )
 
                 finally:
                     shared_state["done"] = True
@@ -871,7 +978,10 @@ class QueueManager:
                 if not completed:
                     log_tail = read_comfyui_log_tail(30)
                     rel_err = extract_relevant_error(log_tail)
-                    raise TimeoutError(f"ComfyUI maksimum işlem süresini ({max_wait_seconds // 60} dakika) aştı. Son Log: {rel_err or log_tail[-250:]}")
+                    raise TimeoutError(
+                        f"İş mutlak süre sınırını ({_format_duration(max_wait_seconds)}) aştı. "
+                        f"Son log: {rel_err or log_tail[-250:]}"
+                    )
 
                 # Çıktı dosyasını ComfyUI history ve output klasöründen bul
                 comfy_output_dir = os.path.join(settings.COMFYUI_DIR, "output")
@@ -948,6 +1058,9 @@ class QueueManager:
                 if rel_err and rel_err not in raw_error:
                     raw_error += f" | {rel_err}"
 
+            if comfy_alive:
+                await self._abandon_prompt(engine, self.active_prompt_id)
+
             kind = resources.classify_failure(raw_error, comfy_alive, self._last_sample)
             peak_text = self._format_peak(job.get("resource_peak"))
 
@@ -977,6 +1090,8 @@ class QueueManager:
             parts = [summary]
             if kind != resources.OTHER and raw_error and raw_error not in summary:
                 parts.append(f"Ayrıntı: {raw_error}")
+            if job.get("dimensions"):
+                parts.append(self._job_context(job))
             if peak_text:
                 parts.append(peak_text)
             if advice:

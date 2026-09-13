@@ -56,7 +56,11 @@ LOCAL_OUTPUT_DIR = f"{LOCAL_RUNTIME_DIR}/outputs"
 COMFYUI_HOST = os.getenv("COMFYUI_HOST", "127.0.0.1")
 COMFYUI_PORT = int(os.getenv("COMFYUI_PORT", "8188"))
 COMFYUI_URL = f"http://{COMFYUI_HOST}:{COMFYUI_PORT}"
-COMFYUI_MAX_WAIT_SECONDS = int(os.getenv("COMFYUI_MAX_WAIT_SECONDS", "1800"))  # 30 dakika maksimum süre
+# Tek işin mutlak üst sınırı (güvenlik ağı). İlerleyen işler asıl olarak donma tespitiyle denetlenir;
+# yüksek çözünürlüklü uzun videolar A100'de 30 dakikayı rahatça aşabilir.
+COMFYUI_MAX_WAIT_SECONDS = int(os.getenv("COMFYUI_MAX_WAIT_SECONDS", "21600"))  # 6 saat
+# ComfyUI çalışırken bu süre boyunca hiçbir düğüm/adım bildirimi gelmezse iş donmuş sayılır.
+COMFY_STALL_SECONDS = int(os.getenv("COMFY_STALL_SECONDS", "1800"))  # 30 dakika
 
 # ==========================================
 # 3b. VRAM YÖNETİMİ (OOM ÖNLEME)

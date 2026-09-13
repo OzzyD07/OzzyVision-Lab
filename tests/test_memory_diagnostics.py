@@ -204,6 +204,7 @@ def _run(scenario):
 
     async def go():
         job = qm.create_job({"model": "ltx25", "prompt": f"bellek testi {scenario}", "duration": 2})
+        qm.queue.remove(job["id"])  # işi test yürütür; arka plan işçisi ikinci kez çalıştırmasın
         await qm._execute_job(job)
         return job
 
