@@ -1511,7 +1511,7 @@ export default function CreateStudio({
 
         {/* VİDEO OYNATICI VEYA BOŞ DURUM */}
         {activeJob && activeJob.status === 'completed' ? (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#000', borderRadius: '16px', overflow: 'hidden', border: '1px solid var(--border-active)' }}>
+          <div style={{ flex: 1, flexShrink: 0, minHeight: 'min(480px, 55vh)', display: 'flex', flexDirection: 'column', background: '#000', borderRadius: '16px', overflow: 'hidden', border: '1px solid var(--border-active)' }}>
             <video
               src={`/api/videos/${activeJob.id}/stream`}
               controls

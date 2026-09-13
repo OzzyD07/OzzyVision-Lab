@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.backend.queue_manager import queue_manager, read_comfyui_log_tail
 from app.backend import resources
+from app.backend import video_compat
 from app.backend.engines import get_engine
 from app.backend.storage import storage, safe_copy, is_safe_id
 from app.backend.camera_presets import get_all_presets
@@ -260,6 +261,16 @@ async def stream_video(job_id: str):
             safe_copy(drive_path, local_path)
         else:
             raise HTTPException(status_code=404, detail="Video dosyası bulunamadı.")
+
+    # Bu düzeltmeden önce üretilmiş videolar da tarayıcı dostu hale getirilir (ilk açılışta bir kez)
+    info = await video_compat.ensure_playable(local_path)
+    job = queue_manager.get_job(job_id)
+    if job is not None and info.get("checked", True) and job.get("video_info") != info:
+        job["video_info"] = info
+        if info.get("transcoded"):
+            # Drive'daki kopyayı da güncelle
+            await asyncio.to_thread(storage.save_job_output, job_id, local_path)
+        queue_manager._persist(job)
 
     return FileResponse(local_path, media_type="video/mp4", filename=f"{job_id}.mp4")
 

@@ -12,6 +12,8 @@ aiohttp>=3.9.0
 anyio>=4.3.0
 # LoRA ve model indirmeleri
 huggingface_hub>=0.23.0
+# Video çıktısını tarayıcıda oynatılabilir biçime dönüştürme (ComfyUI de aynı sürümü kullanır)
+av>=17.0.0
 pytest>=8.0.0
 
 # NOT: torch (CUDA sürümü) ortama göre ayrıca kurulmalıdır.

@@ -18,6 +18,7 @@ import websockets
 from app.backend.storage import storage, safe_copy
 from app.backend.engines import get_engine
 from app.backend import resources
+from app.backend import video_compat
 import app.backend.lora_manager as lora_manager
 import config.settings as settings
 
@@ -1016,13 +1017,22 @@ class QueueManager:
                 if not found_video:
                     raise FileNotFoundError(f"ComfyUI çıktısı video dosyası bulunamadı (Job ID: {job_id}).")
 
-                # 4. Kaydetme & Senkronizasyon (Saving)
+                # 4. Tarayıcı uyumluluğu + Kaydetme & Senkronizasyon (Saving)
                 job["status"] = JobStatus.SAVING
+                job["current_stage"] = "Video tarayıcı için hazırlanıyor..."
+                job["progress"] = 93
+                await self.broadcast_state(job)
+
+                # ComfyUI'nin orijinal dosyasına dokunmadan iş klasöründeki kopyayı hazırla
+                local_mp4 = os.path.join(settings.LOCAL_JOBS_DIR, job_id, "output.mp4")
+                safe_copy(found_video, local_mp4)
+                job["video_info"] = await video_compat.ensure_playable(local_mp4)
+
                 job["current_stage"] = "Video Google Drive'a Kaydediliyor..."
                 job["progress"] = 95
                 await self.broadcast_state(job)
 
-                out_info = storage.save_job_output(job_id, found_video)
+                out_info = storage.save_job_output(job_id, local_mp4)
 
             # 5. Tamamlandı (Completed)
             job["status"] = JobStatus.COMPLETED

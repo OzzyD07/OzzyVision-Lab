@@ -9,6 +9,11 @@ import VideoMetadata from './VideoMetadata';
  * video yuklense bile siyah gorunuyordu. Kucuk bir seek ilk kareyi cizmeye zorlar.
  * Dosya bozuk/eksikse sessiz siyah kutu yerine acik bir yer tutucu gosterilir.
  */
+// Tarayıcı video izini çözemezse hata olayı gelmez: ses çalar, görüntü 0×0 kalır.
+function hasNoPicture(videoEl) {
+  return videoEl.readyState >= 2 && videoEl.videoWidth === 0;
+}
+
 function VideoThumb({ src }) {
   const [failed, setFailed] = useState(false);
 
@@ -40,6 +45,10 @@ function VideoThumb({ src }) {
       preload="metadata"
       onLoadedData={(e) => {
         const v = e.currentTarget;
+        if (hasNoPicture(v)) {
+          setFailed(true);
+          return;
+        }
         if (v.currentTime === 0) {
           v.currentTime = Math.min(0.1, (v.duration || 0.2) / 2);
         }
@@ -49,6 +58,50 @@ function VideoThumb({ src }) {
       onMouseOut={(e) => e.currentTarget.pause()}
       style={{ width: '100%', height: '100%', objectFit: 'cover' }}
     />
+  );
+}
+
+function ModalPlayer({ videoId }) {
+  const [noPicture, setNoPicture] = useState(false);
+  const src = `/api/videos/${videoId}/stream`;
+
+  useEffect(() => {
+    setNoPicture(false);
+  }, [videoId]);
+
+  return (
+    // flexShrink: 0 + sabit yükseklik: modal bir flex sütunu ve metadata uzunsa tarayıcı
+    // overflow:hidden olan bu kutuyu 0 piksele kadar küçültüyordu (ses var, görüntü yok).
+    <div style={{
+      width: '100%',
+      flexShrink: 0,
+      height: noPicture ? 'auto' : 'min(480px, 55vh)',
+      borderRadius: '12px',
+      overflow: 'hidden',
+      background: '#000',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center'
+    }}>
+      <video
+        key={videoId}
+        src={src}
+        controls
+        autoPlay
+        loop
+        playsInline
+        onLoadedData={(e) => setNoPicture(hasNoPicture(e.currentTarget))}
+        style={{ width: '100%', height: noPicture ? '60px' : '100%', objectFit: 'contain' }}
+      />
+      {noPicture && (
+        <div style={{ padding: '18px', textAlign: 'center', fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          <Film size={28} color="rgba(255,255,255,0.25)" style={{ margin: '0 auto 8px' }} />
+          Tarayıcı bu videonun görüntüsünü çözemedi; yalnızca ses oynatılıyor.<br />
+          Videoyu indirip VLC gibi bir oynatıcıda açabilirsiniz.
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -245,15 +298,7 @@ export default function GalleryView({ videos, onReuseSettings, onRefresh, camera
             </div>
 
             {/* Oynatıcı Alanı */}
-            <div style={{ width: '100%', maxHeight: '480px', borderRadius: '12px', overflow: 'hidden', background: '#000', display: 'flex', justifyContent: 'center' }}>
-              <video
-                src={`/api/videos/${selectedVideo.id}/stream`}
-                controls
-                autoPlay
-                loop
-                style={{ maxWidth: '100%', maxHeight: '480px' }}
-              />
-            </div>
+            <ModalPlayer videoId={selectedVideo.id} />
 
             {/* Video Detayları ve Metadata */}
             <VideoMetadata job={selectedVideo} cameraPresets={cameraPresets} />

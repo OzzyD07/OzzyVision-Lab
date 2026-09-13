@@ -169,6 +169,13 @@ function ReferenceGrid({ items, kind }) {
   );
 }
 
+function formatVideoInfo(info) {
+  if (!info || !info.video_codec) return null;
+  const parts = [info.video_codec, info.pix_fmt, info.profile].filter(Boolean);
+  const audio = info.audio_codec ? ` + ${info.audio_codec}` : '';
+  return parts.join(' · ') + audio;
+}
+
 /**
  * Bir işin tüm üretim parametrelerini ve kullanılan içerikleri gösterir.
  */
@@ -336,6 +343,10 @@ export default function VideoMetadata({ job, cameraPresets = [] }) {
             />
             <Row label="Üretim Süresi" value={renderTime} />
             <Row label="Google Drive" value={job.drive_video_path ? 'Yedeklendi' : 'Yerel'} />
+            <Row label="Video Biçimi" value={formatVideoInfo(job.video_info)} mono />
+            {job.video_info?.transcoded && (
+              <Row label="Orijinal Biçim" value={`${formatVideoInfo(job.video_info.original)} (tarayıcı için dönüştürüldü)`} mono />
+            )}
           </div>
         </Section>
       </div>
