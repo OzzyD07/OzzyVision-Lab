@@ -69,6 +69,24 @@ def _count(path):
     return frames, samples
 
 
+def _video_timing(path):
+    """Video izinin gerçek zamanlaması: son kare zamanı ve kare aralıkları."""
+    with av.open(path) as c:
+        times = [f.time for f in c.decode(c.streams.video[0])]
+    steps = [round(b - a, 4) for a, b in zip(times, times[1:])]
+    return times[-1], steps
+
+
+def assert_real_motion(path, frames, fps=FPS):
+    """
+    Kare sayısı doğru olsa da zaman damgaları bozuk olabilir: pts=None ile yazılan
+    72 kare t=0'a yığılıyor, görüntü donuyordu. Son kare ve aralıklar doğrulanır.
+    """
+    last, steps = _video_timing(path)
+    assert last == pytest.approx((frames - 1) / fps, abs=1.5 / fps), (path, last)
+    assert steps and min(steps) > 0, (path, "kareler üst üste", steps[:5])
+
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
     vc._cache.clear()
@@ -120,7 +138,29 @@ def test_unplayable_video_converted_preserving_frames_and_audio(tmp_path, codec,
     frames_after, samples_after = _count(path)
     assert frames_after == frames_before
     assert samples_after == samples_before  # AAC ses yeniden kodlanmadan kopyalanır
+    assert_real_motion(path, frames_before)
     assert not os.path.exists(path + ".part")
+
+
+def test_non_aac_audio_is_reencoded_in_sync(tmp_path):
+    """AAC/MP3 dışı ses (MP2) yeniden kodlanır; video hareketi ve ses süresi korunur."""
+    try:
+        av.codec.Codec("mp2", "w")
+    except Exception:
+        pytest.skip("mp2 kodlayıcı yok")
+    path = _make_clip(tmp_path / "mp2.mp4", pix_fmt="yuv420p10le", audio="mp2")
+    # PyAV çözücü adını bildirir: MP2 de MP3 de "mp3float" görünür
+    assert vc.probe(path)["audio_codec"] in ("mp2", "mp3float")
+    assert not vc.is_browser_playable(vc.probe(path))
+    _, samples_before = _count(path)
+
+    info = asyncio.run(vc.ensure_playable(path))
+
+    assert info["transcoded"] is True and info["audio_codec"] == "aac"
+    assert vc.is_browser_playable(vc.probe(path))
+    assert_real_motion(path, N)
+    _, samples_after = _count(path)
+    assert abs(samples_after - samples_before) <= 2048
 
 
 def test_playable_video_left_untouched(tmp_path):
@@ -137,6 +177,7 @@ def test_odd_dimensions_become_even(tmp_path):
     final = vc.probe(path)
     assert (final["width"], final["height"]) == (160, 90)
     assert vc.is_browser_playable(final)
+    assert_real_motion(path, N)
 
 
 def test_unreadable_file_is_not_modified(tmp_path):

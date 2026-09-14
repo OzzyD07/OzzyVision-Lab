@@ -42,6 +42,7 @@ OPTIONAL_NODE_INPUTS = {
     "first_frame",
     "strength",
     "conditioning_strength",
+    "bit_depth",
 }
 
 # /object_info yanıtı için basit önbellek (ComfyUI yeniden başlatılınca yenilenir)

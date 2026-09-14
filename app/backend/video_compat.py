@@ -11,13 +11,16 @@ backend'in varsayılan iş parçacığı havuzunu (ComfyUI durum sorguları) dol
 
 import asyncio
 import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 from typing import Any, Dict, Optional, Tuple
 
 SAFE_VIDEO_CODECS = {"h264"}
 SAFE_PIX_FMTS = {"yuv420p", "yuvj420p"}
-SAFE_AUDIO_CODECS = {"aac", "mp3"}
+# Yalnızca AAC olduğu gibi kopyalanır. PyAV çözücü adını bildirir: MP4 içindeki MP2 ve MP3
+# ikisi de "mp3float" görünür ve ayırt edilemez; MP2 tarayıcıda oynamaz. Bunlar AAC'ye çevrilir.
+SAFE_AUDIO_CODECS = {"aac"}
 
 _probe_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="video-probe")
 _transcode_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-transcode")
@@ -105,8 +108,9 @@ def transcode(src: str, dst: str) -> None:
             for packet in inp.demux(streams):
                 if packet.stream.index == vin.index:
                     for frame in packet.decode():
+                        # reformat kaynağın pts/time_base değerlerini korur. pts=None VERİLMEMELİ:
+                        # PyAV o durumda tüm kareleri aynı ana yazar (video izi ~0 sn, görüntü donar).
                         frame = frame.reformat(width=vout.width, height=vout.height, format="yuv420p")
-                        frame.pts = None  # sabit kare hızında yeniden zaman damgası
                         for out_packet in vout.encode(frame):
                             out.mux(out_packet)
                 elif aout is not None:
@@ -117,7 +121,6 @@ def transcode(src: str, dst: str) -> None:
                         out.mux(packet)
                     else:
                         for frame in packet.decode():
-                            frame.pts = None
                             for out_packet in aout.encode(frame):
                                 out.mux(out_packet)
 
@@ -131,6 +134,146 @@ def transcode(src: str, dst: str) -> None:
     finally:
         if os.path.exists(part):
             os.remove(part)
+
+
+# MiniMax H3 referans videoları: kareler 24 fps beklenir, 2-15 sn önerilir,
+# en az 5 kare zorunludur (ComfyUI nodes_minimax_h3.py).
+REFERENCE_FPS = 24
+REFERENCE_MAX_SECONDS = 15.0
+REFERENCE_MIN_FRAMES = 5
+
+
+def _stream_timing(path: str) -> Tuple[float, Optional[float]]:
+    import av
+    with av.open(path) as c:
+        v = c.streams.video[0]
+        fps = float(v.average_rate or v.guessed_rate or 0)
+        duration = None
+        if c.duration:
+            duration = float(c.duration) / av.time_base
+        elif v.duration and v.time_base:
+            duration = float(v.duration * v.time_base)
+    return fps, duration
+
+
+def prepare_reference_video(
+    src: str,
+    dst: str,
+    fps: int = REFERENCE_FPS,
+    max_seconds: float = REFERENCE_MAX_SECONDS,
+) -> Dict[str, Any]:
+    """
+    Referans videoyu MiniMax H3'ün beklediği biçime getirir: sabit 24 fps, en fazla 15 sn.
+
+    Farklı kare hızındaki videolar kare tekrarı/atlamasıyla 24 fps'e çevrilir; aksi halde
+    düğüm kareleri 24 fps sanıp hareketi ve sesi yanlış zamanlar. Zaten uygun olan video
+    yeniden kodlanmadan kopyalanır. Döner: {"file", "has_audio", "duration", "converted", "trimmed", "source_fps"}
+    """
+    import av
+
+    info = probe(src)
+    if not info or not info.get("video_codec"):
+        raise ValueError("video okunamadı veya görüntü izi yok")
+
+    src_fps, duration = _stream_timing(src)
+    has_audio = info.get("audio_codec") is not None
+    needs_fps = abs(src_fps - fps) > 0.01
+    needs_trim = duration is not None and duration > max_seconds + 1e-3
+
+    if not needs_fps and not needs_trim:
+        if duration is not None and round(duration * fps) < REFERENCE_MIN_FRAMES:
+            raise ValueError("referans video çok kısa (en az ~0.2 sn olmalı)")
+        if os.path.abspath(src) != os.path.abspath(dst):
+            shutil.copyfile(src, dst)
+        return {"file": os.path.basename(dst), "has_audio": has_audio, "duration": duration,
+                "converted": False, "trimmed": False, "source_fps": src_fps}
+
+    encoder = _h264_encoder()
+    part = dst + ".part"
+    emitted = 0
+    try:
+        with av.open(src) as inp, av.open(part, "w", format="mp4", options={"movflags": "faststart"}) as out:
+            vin = inp.streams.video[0]
+            vout = out.add_stream(encoder, rate=fps)
+            vout.width = vin.codec_context.width - (vin.codec_context.width % 2)
+            vout.height = vin.codec_context.height - (vin.codec_context.height % 2)
+            vout.pix_fmt = "yuv420p"
+            if encoder in ("libx264", "h264"):
+                vout.options = {"crf": "18", "preset": "veryfast"}
+
+            # Tüm izler ilk paket yazılmadan önce tanımlanmalı (MP4 başlığı bir kez yazılır)
+            ain = inp.streams.audio[0] if has_audio else None
+            aout = None
+            copy_audio = False
+            if ain is not None:
+                if ain.codec_context.name in SAFE_AUDIO_CODECS:
+                    aout = out.add_stream_from_template(ain)
+                    copy_audio = True
+                else:
+                    aout = out.add_stream("aac", rate=ain.codec_context.sample_rate or 48000)
+
+            def emit(frame):
+                nonlocal emitted
+                out_frame = frame.reformat(width=vout.width, height=vout.height, format="yuv420p")
+                # Kareler tekrarlanıp atlandığı için kaynak zamanı değil çıktı sırası kullanılır
+                out_frame.pts = emitted
+                out_frame.time_base = Fraction(1, fps)
+                for pkt in vout.encode(out_frame):
+                    out.mux(pkt)
+                emitted += 1
+
+            # Her 1/fps anına, o anda ekranda olan (başlangıcı <= an) kaynak kareyi yaz
+            limit_ticks = int(round(max_seconds * fps))
+            first_t = None
+            prev = None
+            prev_t = 0.0
+            src_step = 1.0 / src_fps if src_fps > 0 else 1.0 / fps
+            for index, frame in enumerate(inp.decode(vin)):
+                t = frame.time if frame.time is not None else index * src_step
+                if first_t is None:
+                    first_t = t
+                t -= first_t
+                if t >= max_seconds:
+                    break
+                while prev is not None and emitted < limit_ticks and emitted / fps < t:
+                    emit(prev)
+                prev, prev_t = frame, t
+            if prev is not None:
+                end = min(max_seconds, prev_t + src_step)
+                while emitted < limit_ticks and emitted / fps < end - 1e-9:
+                    emit(prev)
+            for pkt in vout.encode():
+                out.mux(pkt)
+
+            if emitted < REFERENCE_MIN_FRAMES:
+                raise ValueError("referans video çok kısa (en az ~0.2 sn olmalı)")
+
+            if ain is not None:
+                inp.seek(0)
+                if copy_audio:
+                    for packet in inp.demux(ain):
+                        if packet.dts is None:
+                            continue
+                        if packet.pts is not None and float(packet.pts * ain.time_base) >= max_seconds:
+                            break
+                        packet.stream = aout
+                        out.mux(packet)
+                else:
+                    for frame in inp.decode(ain):
+                        if frame.time is not None and frame.time >= max_seconds:
+                            break
+                        for pkt in aout.encode(frame):
+                            out.mux(pkt)
+                    for pkt in aout.encode():
+                        out.mux(pkt)
+        os.replace(part, dst)
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
+
+    return {"file": os.path.basename(dst), "has_audio": has_audio,
+            "duration": round(emitted / fps, 3), "converted": True,
+            "trimmed": bool(needs_trim), "source_fps": src_fps}
 
 
 def _ensure_sync(path: str, probed: Optional[Dict[str, Any]]) -> Dict[str, Any]:

@@ -392,13 +392,16 @@ def test_minimax_h3_engine():
     assert "<d>[Turkish] Merhaba dünya!</d>" in node8["prompt"]
     assert node8["ref_images.ref_image_0"] == ["101", 0]
     assert node8["ref_images.ref_image_1"] == ["102", 0]
-    assert node8["ref_videos.ref_video_0"] == ["201", 0]
+    # ref_videos IMAGE (kareler) bekler: LoadVideo -> GetVideoComponents çıktı 0
+    assert node8["ref_videos.ref_video_0"] == ["211", 0]
     assert node8["ref_audios.ref_audio_0"] == ["301", 0]
 
     # Yükleyici düğümlerin varlığı
     assert wf["101"]["inputs"]["image"] == "char_front.png"
     assert wf["102"]["inputs"]["image"] == "char_side.png"
-    assert wf["201"]["inputs"]["video"] == "motion_dance.mp4"
+    # LoadVideo'nun girdisi "file" (ComfyUI nodes_video.py); VIDEO çıktısı GetVideoComponents'e gider
+    assert wf["201"] == {"class_type": "LoadVideo", "inputs": {"file": "motion_dance.mp4"}}
+    assert wf["211"] == {"class_type": "GetVideoComponents", "inputs": {"video": ["201", 0]}}
     assert wf["301"]["inputs"]["audio"] == "voice_timbre.wav"
 
     # 4. Referans Limitleri Doğrulama Testi (> 9 resim veya > 12 toplam hata fırlatmalı)

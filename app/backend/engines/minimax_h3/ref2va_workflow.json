@@ -29,8 +29,14 @@
   "8": {
     "class_type": "MiniMaxH3ImageToVideo",
     "inputs": {
-      "clip": ["2", 0],
-      "vae": ["3", 0],
+      "clip": [
+        "2",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ],
       "prompt": "Cinematic shot of a futuristic cyberpunk city at night with neon lights and flying cars, synthwave soundtrack",
       "width": 1344,
       "height": 768,
@@ -40,8 +46,14 @@
   "9": {
     "class_type": "BasicGuider",
     "inputs": {
-      "model": ["1", 0],
-      "conditioning": ["8", 0]
+      "model": [
+        "1",
+        0
+      ],
+      "conditioning": [
+        "8",
+        0
+      ]
     }
   },
   "10": {
@@ -53,7 +65,10 @@
   "11": {
     "class_type": "BasicScheduler",
     "inputs": {
-      "model": ["1", 0],
+      "model": [
+        "1",
+        0
+      ],
       "scheduler": "simple",
       "steps": 8,
       "denoise": 1.0
@@ -68,39 +83,76 @@
   "13": {
     "class_type": "SamplerCustomAdvanced",
     "inputs": {
-      "noise": ["12", 0],
-      "guider": ["9", 0],
-      "sampler": ["10", 0],
-      "sigmas": ["11", 0],
-      "latent_image": ["8", 1]
+      "noise": [
+        "12",
+        0
+      ],
+      "guider": [
+        "9",
+        0
+      ],
+      "sampler": [
+        "10",
+        0
+      ],
+      "sigmas": [
+        "11",
+        0
+      ],
+      "latent_image": [
+        "8",
+        1
+      ]
     }
   },
   "14": {
     "class_type": "VAEDecode",
     "inputs": {
-      "samples": ["13", 0],
-      "vae": ["3", 0]
+      "samples": [
+        "13",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
     }
   },
   "15": {
     "class_type": "VAEDecodeAudio",
     "inputs": {
-      "samples": ["13", 0],
-      "vae": ["4", 0]
+      "samples": [
+        "13",
+        0
+      ],
+      "vae": [
+        "4",
+        0
+      ]
     }
   },
   "16": {
     "class_type": "CreateVideo",
     "inputs": {
-      "images": ["14", 0],
-      "audio": ["15", 0],
-      "fps": 24
+      "images": [
+        "14",
+        0
+      ],
+      "audio": [
+        "15",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": 8
     }
   },
   "17": {
     "class_type": "SaveVideo",
     "inputs": {
-      "video": ["16", 0],
+      "video": [
+        "16",
+        0
+      ],
       "filename_prefix": "OzzyVision_MiniMax_H3",
       "format": "auto"
     }

@@ -702,12 +702,18 @@ class QueueManager:
 
             is_i2v = job.get("type") in ["image_to_video", "reference_to_video"]
 
-            def _sync_reference(item: str) -> Optional[str]:
-                """Referans dosyayı ComfyUI input dizinine kopyalar; bulunamazsa None döner."""
+            def _resolve_reference(item: str) -> Optional[str]:
                 path = storage.get_asset_path(item)
                 if not path and os.path.isfile(item):
                     path = item
                 if not path or not os.path.exists(path):
+                    return None
+                return path
+
+            def _sync_reference(item: str) -> Optional[str]:
+                """Referans dosyayı ComfyUI input dizinine kopyalar; bulunamazsa None döner."""
+                path = _resolve_reference(item)
+                if not path:
                     return None
                 fn = os.path.basename(path)
                 safe_copy(path, os.path.join(comfy_input, fn))
@@ -731,7 +737,7 @@ class QueueManager:
 
             # MiniMax H3 çoklu referans senkronizasyonu (Görseller, Videolar, Sesler)
             elif model_name == "minimax_h3":
-                for key in ("ref_images", "ref_videos", "ref_audios"):
+                for key in ("ref_images", "ref_audios"):
                     resolved = []
                     for item in job.get(key, []):
                         fn = _sync_reference(item)
@@ -740,6 +746,27 @@ class QueueManager:
                         else:
                             missing_refs.append(str(item))
                     job[key] = resolved
+
+                # Referans videolar: düğüm 24 fps kare bekler. Hazırlanan kopya ComfyUI'ye verilir;
+                # iş kaydında orijinal dosya adı kalır (galeri önizlemesi ve yeniden deneme için).
+                resolved_videos, prepared_videos = [], []
+                for item in job.get("ref_videos", []):
+                    path = _resolve_reference(item)
+                    if not path:
+                        missing_refs.append(str(item))
+                        continue
+                    stem = os.path.splitext(os.path.basename(path))[0]
+                    dest = os.path.join(comfy_input, f"{stem}_ref24.mp4")
+                    job["current_stage"] = "Referans videolar 24 fps'e hazırlanıyor..."
+                    await self.broadcast_state(job)
+                    try:
+                        meta = await asyncio.to_thread(video_compat.prepare_reference_video, path, dest)
+                    except ValueError as ve:
+                        raise ValueError(f"Referans video '{os.path.basename(path)}': {ve}")
+                    resolved_videos.append(os.path.basename(path))
+                    prepared_videos.append(meta)
+                job["ref_videos"] = resolved_videos
+                job["ref_videos_prepared"] = prepared_videos
 
             if missing_refs:
                 # Eksik referansları ComfyUI'ye göndermek "LoadImage: file not found"

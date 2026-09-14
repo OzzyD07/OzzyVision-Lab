@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 
 from app.backend.engines.base import BaseVideoEngine
+from app.backend import video_compat
 from app.backend.camera_presets import apply_camera_preset
 from app.backend.prompt_enhancer import enhance_prompt
 import config.settings as settings
@@ -74,6 +75,21 @@ class MiniMaxH3Engine(BaseVideoEngine):
             "duration": clamped_duration,
             "fps": fps
         }
+
+    @staticmethod
+    def _reference_video_meta(job_params: Dict[str, Any], ref_videos: List[str]) -> List[Dict[str, Any]]:
+        """
+        Her referans video için ComfyUI'ye verilecek dosya adı ve ses izi bilgisi.
+        Kuyruk yöneticisi hazırladıysa onu kullanır; aksi halde ComfyUI input dizinindeki dosyayı inceler.
+        """
+        prepared = job_params.get("ref_videos_prepared") or []
+        if len(prepared) == len(ref_videos) and all(isinstance(p, dict) and p.get("file") for p in prepared):
+            return prepared
+        result = []
+        for name in ref_videos:
+            info = video_compat.probe(os.path.join(settings.COMFYUI_DIR, "input", name))
+            result.append({"file": name, "has_audio": bool(info and info.get("audio_codec"))})
+        return result
 
     def validate_reference_inputs(
         self,
@@ -254,6 +270,7 @@ class MiniMaxH3Engine(BaseVideoEngine):
         # Çoklu Referans varsa: MiniMaxH3ReferenceToVideo
         # Referans yoksa veya tekli görsel I2V ise: MiniMaxH3ImageToVideo
         has_multi_ref = bool(ref_images or ref_videos or ref_audios)
+        video_audio_count = 0
 
         if has_multi_ref:
             # Çoklu Referans (R2V) Düğümü
@@ -282,16 +299,25 @@ class MiniMaxH3Engine(BaseVideoEngine):
                 }
                 workflow["8"]["inputs"][f"ref_images.ref_image_{idx}"] = [img_node_id, 0]
 
-            # Video referanslarını bağla
-            for idx, vid_fn in enumerate(ref_videos):
-                vid_node_id = f"20{idx + 1}"
-                workflow[vid_node_id] = {
+            # Video referanslarını bağla.
+            # ref_videos girdisi IMAGE (24 fps kareler) bekler; LoadVideo ise VIDEO döndürür.
+            # GetVideoComponents videoyu kareler (0) ve sese (1) ayırır; ses aynı numaralı
+            # ref_video_audios yuvasına gider.
+            for idx, video in enumerate(self._reference_video_meta(job_params, ref_videos)):
+                load_id = f"20{idx + 1}"
+                split_id = f"21{idx + 1}"
+                workflow[load_id] = {
                     "class_type": "LoadVideo",
-                    "inputs": {
-                        "video": vid_fn
-                    }
+                    "inputs": {"file": video["file"]}
                 }
-                workflow["8"]["inputs"][f"ref_videos.ref_video_{idx}"] = [vid_node_id, 0]
+                workflow[split_id] = {
+                    "class_type": "GetVideoComponents",
+                    "inputs": {"video": [load_id, 0]}
+                }
+                workflow["8"]["inputs"][f"ref_videos.ref_video_{idx}"] = [split_id, 0]
+                if video.get("has_audio"):
+                    workflow["8"]["inputs"][f"ref_video_audios.ref_video_audio_{idx}"] = [split_id, 1]
+                    video_audio_count += 1
 
             # Ses referanslarını bağla
             for idx, aud_fn in enumerate(ref_audios):
@@ -371,6 +397,7 @@ class MiniMaxH3Engine(BaseVideoEngine):
                 "reference_counts": {
                     "images": len(ref_images),
                     "videos": len(ref_videos),
+                    "video_audios": video_audio_count,
                     "audios": len(ref_audios),
                     "total": len(ref_images) + len(ref_videos) + len(ref_audios)
                 },
